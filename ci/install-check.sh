@@ -141,6 +141,15 @@ run_installer_at() { # run_installer_at <base-url> <install-dir> <log>
       sh "$INSTALLER" >"$3" 2>&1
 }
 
+run_installer_with_tmpdir() { # run_installer_with_tmpdir <tmpdir> <install-dir> <log>
+  env TMPDIR="$1" \
+      SYNAPSE_BASE_URL="$BASE" \
+      SYNAPSE_VERSION="$FAKE_VERSION" \
+      SYNAPSE_INSTALL_DIR="$2" \
+      HOME="$WORK/home" \
+      sh "$INSTALLER" >"$3" 2>&1
+}
+
 # ==========================================================================
 echo "== happy path"
 # ==========================================================================
@@ -203,6 +212,42 @@ check_fails "failed reinstall over an existing install exits non-zero" \
   run_installer "$BIN1" "$WORK/run3.log"
 check "failed reinstall left the existing binary intact" installed_version
 
+cp "$WORK/checksums.good" "$RELEASE/checksums.txt"
+
+# ==========================================================================
+echo "== asset traversal must be rejected"
+# ==========================================================================
+# The manifest controls ASSET. The installer must reject traversal before it
+# can use that value in either a URL or a local temporary-file path.
+ESCAPED_ASSET="../escaped-${EXPECT_TARGET}.tar.gz"
+cp "$RELEASE/synapse-9.9.9-${EXPECT_TARGET}.tar.gz" \
+   "$RELEASE/escaped-${EXPECT_TARGET}.tar.gz"
+python3 - "$RELEASE/checksums.txt" "$EXPECT_TARGET" <<'PY'
+import sys
+path, target = sys.argv[1], sys.argv[2]
+lines = []
+for line in open(path):
+    digest, separator, name = line.partition('  ')
+    if name.strip() == f'synapse-9.9.9-{target}.tar.gz':
+        lines.append(f'{digest}  ../escaped-{target}.tar.gz\n')
+    else:
+        lines.append(line)
+open(path, 'w').write(''.join(lines))
+PY
+check "checksums.txt contains a traversal asset" \
+  grep -qF -- "$ESCAPED_ASSET" "$RELEASE/checksums.txt"
+
+INSTALLER_TMP="$WORK/installer-tmp"
+mkdir "$INSTALLER_TMP"
+BIN_TRAVERSAL="$WORK/bin-traversal"
+check_fails "traversal asset name exits non-zero" \
+  run_installer_with_tmpdir "$INSTALLER_TMP" "$BIN_TRAVERSAL" "$WORK/traversal.log"
+check "traversal asset name is rejected before download" \
+  grep -q "path traversal" "$WORK/traversal.log"
+check "nothing installed after traversal rejection" \
+  test ! -e "$BIN_TRAVERSAL/synapse"
+check "traversal asset did not escape installer temp directory" \
+  test ! -e "$INSTALLER_TMP/escaped-${EXPECT_TARGET}.tar.gz"
 cp "$WORK/checksums.good" "$RELEASE/checksums.txt"
 
 # ==========================================================================
