@@ -1,32 +1,33 @@
-# omp refuses to start on bun < 1.3.14 (it version-checks at runtime), and
-# nixpkgs currently pins 1.3.13. nixpkgs' bun is a fetch-and-unzip of upstream's
-# prebuilt binary, so overriding version + src is sufficient — nothing is compiled.
+# nixpkgs 26.11 removed x86_64-darwin and its 26.05 Darwin branch still
+# packages Bun 1.3.13. Keep all four supported targets on the current upstream
+# Bun release so OMP has one runtime contract everywhere.
 #
-# Remove this file once nixpkgs ships bun >= 1.3.14 and use pkgs.bun directly.
+# Delete this override once nixpkgs provides the same Bun version on all four
+# supported targets.
 {
   bun,
   fetchurl,
   stdenvNoCC,
 }:
 let
-  version = "1.3.14";
+  version = "1.4.2";
 
   sources = {
     "x86_64-linux" = {
-      asset = "bun-linux-x64.zip";
-      hash = "sha256-lR7iruhV8IWVruxiJSJqKY0/6oOj3NZGXAnLzN9+hI8=";
+      asset = "bun-linux-x64-baseline.zip";
+      hash = "sha256-xngEDxT+BEDrg503y9DOTAUaMtpygGrJfeamqra/co8=";
     };
     "aarch64-linux" = {
       asset = "bun-linux-aarch64.zip";
-      hash = "sha256-on/7Y6gxA3WDbg1vZorhf6jY0YuIw3yCHGUzGXOhmjs=";
+      hash = "sha256-VDKLvC2cjgyfiSxUTWbFeoO4QTnjSQnl7oF1jxrI/ac=";
     };
     "x86_64-darwin" = {
       asset = "bun-darwin-x64.zip";
-      hash = "sha256-QYPfM3RiPlurMVxUfPoJdFM81FfYa3O2OfeoeXTNZjM=";
+      hash = "sha256-gFINfhdSYwjJGF0mFnmsbSd5jTgDoOn3/5Ehq4r/sBI=";
     };
     "aarch64-darwin" = {
       asset = "bun-darwin-aarch64.zip";
-      hash = "sha256-2LliIYKK1vl6x6wKt+lYcjQa92MAHogD6CZ2UsJlJiA=";
+      hash = "sha256-kJh6OhbX21VtiGrD1VHnttPt8KHPQ6yu1iLoZ2vh0S8=";
     };
   };
 
@@ -41,6 +42,8 @@ bun.overrideAttrs (old: {
     url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/${source.asset}";
     inherit (source) hash;
   };
+  sourceRoot = if system == "x86_64-darwin" then "bun-darwin-x64" else old.sourceRoot;
+
 
   # Upstream's own version string is what omp gates on; make sure we get it.
   doInstallCheck = true;

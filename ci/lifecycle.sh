@@ -98,17 +98,17 @@ stage_update() {
   "$SYNAPSE" update herdr
 
   # Assert the outcome the update command is contractually obligated to produce.
-  check "version bumped to 0.7.5" "[ \"$(state_version herdr)\" = '0.7.5' ]"
+  check "version bumped to 0.9.0" "[ \"$(state_version herdr)\" = '0.9.0' ]"
   check "old version in history" "[ \"$(state_history_version herdr 0)\" = '$before' ]"
   check "history length is 1" "[ \"$(state_history_len herdr)\" -eq 1 ]"
   check "state.json still valid" "jq '.' \"$STATE_FILE\" >/dev/null 2>&1"
-  check "updated executable prints 0.7.5" \
-    "\"$SYNAPSE_PROFILE/bin/herdr\" --version | grep -q '0.7.5'"
+  check "updated executable prints 0.9.0" \
+    "\"$SYNAPSE_PROFILE/bin/herdr\" --version | grep -q '0.9.0'"
 
   # synapse list must reflect the updated version.
   list_out="$("$SYNAPSE" list)"
-  printf '%s' "$list_out" | grep -q '0.7.5'
-  check "list shows new version" "printf '%s' \"$list_out\" | grep -q '0.7.5'"
+  printf '%s' "$list_out" | grep -q '0.9.0'
+  check "list shows new version" "printf '%s' \"$list_out\" | grep -q '0.9.0'"
 
   echo "update complete"
 }
@@ -119,7 +119,7 @@ stage_rollback() {
   before="$(state_version herdr)"
   before_hist="$(state_history_version herdr 0)"
 
-  check "version before rollback is 0.7.5" "[ \"$before\" = '0.7.5' ]"
+  check "version before rollback is 0.9.0" "[ \"$before\" = '0.9.0' ]"
   check "history has 0.7.4" "[ \"$before_hist\" = '0.7.4' ]"
 
   # Rollback must repoint the dedicated profile to the recorded store path,
@@ -131,7 +131,7 @@ stage_rollback() {
   # Outcome assertions — not just "command ran".
   check "version reverted to 0.7.4" "[ \"$after\" = '0.7.4' ]"
   check "bad version gone from history" \
-    "! jq -e '.packages.herdr.history[] | select(.version == \"0.7.5\")' \"$STATE_FILE\" >/dev/null 2>&1"
+    "! jq -e '.packages.herdr.history[] | select(.version == \"0.9.0\")' \"$STATE_FILE\" >/dev/null 2>&1"
   check "state.json still valid" "jq '.' \"$STATE_FILE\" >/dev/null 2>&1"
   check "rolled-back executable prints 0.7.4" \
     "\"$SYNAPSE_PROFILE/bin/herdr\" --version | grep -q '0.7.4'"

@@ -31,15 +31,15 @@ three versions of every package so a bad update is one command to undo.
 
 ### Public bootstrap
 
-The repository and release assets are public. Anonymous bootstrap was verified end to end against
-the published v1.0.0 release:
+The repository and release assets are public. Anonymous bootstrap was verified
+end to end against the published v1.1.0 release:
 
 ```bash
 curl -fsSL https://synapse.hyberorbit.com/install | sh
 ```
 
-The portable-stack and dedicated-profile work in this checkout targets v1.1.0 and remains
-unreleased until its commit, CI matrix, and release workflow complete.
+The main branch targets v1.2.0; it is not a release until its matching tag and
+release workflow publish assets.
 
 ### Manual / developer install (Nix already installed)
 
