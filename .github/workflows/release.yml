@@ -144,8 +144,8 @@ jobs:
           [ "$count" = 4 ] || { echo "::error::expected 4 tarballs, found $count"; exit 1; }
           sha256sum -c checksums.txt
 
-      # Package versions come from the flake rather than being hardcoded here:
-      # herdr tracks nixpkgs, so a literal in this file would silently rot.
+      # Package versions come from the flake rather than being hardcoded here,
+      # so release notes always report the selected platform's package versions.
       - uses: cachix/install-nix-action@v27
         with:
           install_url: https://releases.nixos.org/nix/nix-2.24.10/install

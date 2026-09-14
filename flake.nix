@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgsDarwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -18,27 +19,34 @@
   outputs =
     {
       nixpkgs,
+      nixpkgsDarwin,
       flake-utils,
       ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        # nixpkgs 26.11 removed x86_64-darwin. Keep that supported target on
+        # the maintained 26.05 Darwin branch while every other target follows
+        # nixos-unstable.
+        pkgs =
+          (if system == "x86_64-darwin" then nixpkgsDarwin else nixpkgs).legacyPackages.${system};
 
-        # Already packaged upstream in nixpkgs (pkgs/by-name/he/herdr) and in
-        # homebrew-core, so we track upstream's maintenance instead of forking it.
-        herdr = pkgs.herdr;
+        # nixpkgs supplies Herdr everywhere except x86_64-darwin, where its
+        # maintained 26.05 Darwin branch predates the package. Use that
+        # platform's official upstream binary only as the narrow fallback.
+        herdr =
+          if system == "x86_64-darwin" then pkgs.callPackage ./nix/herdr.nix { } else pkgs.herdr;
         skillshare = pkgs.callPackage ./nix/skillshare.nix { };
 
-        # omp version-checks bun at runtime and rejects nixpkgs' current 1.3.13.
+        # OMP needs Bun newer than the x86_64-darwin nixpkgs package.
         bun = pkgs.callPackage ./nix/bun.nix { };
         omp = pkgs.callPackage ./nix/omp.nix { inherit bun; };
 
         # The Rust CLI itself.
         synapse = pkgs.rustPlatform.buildRustPackage {
           pname = "synapse";
-          version = "1.1.0";
+          version = "1.2.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
           # Nix build sandbox has no `which` binary; tests that probe

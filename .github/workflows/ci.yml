@@ -143,12 +143,10 @@ jobs:
       - name: fish integration
         run: ./ci/shell-check.sh fish "${{ runner.temp }}/home-fish"
 
-  # ── Nix flake: this is what closes the darwin verification gap ─────────────
+  # ── Nix flake: build every claimed target natively ─────────────────────────
   #
-  # SYN-2's derivations were only ever realised in a nixos/nix container
-  # Note: x86_64-darwin is omitted because nixpkgs-unstable dropped support;
-  # the release.yml build uses native rustc instead. The remaining legs verify
-  # that the nix derivations build and that bun/omp darwin binaries resolve.
+  # x86_64-darwin resolves through the maintained 26.05 Darwin nixpkgs branch;
+  # the other targets follow nixos-unstable.
   nix-flake:
     name: nix ${{ matrix.nix_system }}
     runs-on: ${{ matrix.os }}
@@ -156,6 +154,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: macos-15-intel
+            nix_system: x86_64-darwin
           - os: macos-14
             nix_system: aarch64-darwin
           - os: ubuntu-22.04
@@ -216,7 +216,10 @@ jobs:
             ./result-harness/bin/"$bin" --version
           done
 
+      # x86_64-darwin uses the maintained 26.05 branch, which does not ship
+      # nix-fast-build. The separate package builds above remain the proof.
       - name: parallel build via nix-fast-build
+        if: matrix.nix_system != 'x86_64-darwin'
         run: |
           set -euo pipefail
           # Everything is already in the local store, so this exercises the

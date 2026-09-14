@@ -4,8 +4,8 @@ Orientation for an agent or engineer picking this repo up cold. Read this before
 touching code. It records what is built, what is proven, what is deliberately
 deferred, and the traps that already cost time.
 
-Last updated: 2026-08-25, after the portable OMP stack implementation and package refresh.
-The changes described below are in the working tree and are not committed or released.
+Last updated: 2026-09-14. v1.1.0 was released on 2026-08-26; v1.2.0 is the
+current development target.
 
 ---
 
@@ -27,9 +27,9 @@ Managed packages, each acquired differently on purpose:
 
 | Package | Version | How, and why that way |
 |---|---|---|
-| herdr | 0.7.5 | `pkgs.herdr` from nixpkgs. Upstream already packages it; forking it would mean maintaining a derivation for no gain. |
-| omp | 18.0.4 | npm `@oh-my-pi/pi-coding-agent`, bun-wrapped. Published to npm only, `dist/cli.js` is a prebundled bun script. Per-platform natives resolve through `optionalDependencies`. |
-| skillshare | 0.20.25 | Prebuilt GitHub release tarball, sha256 from upstream `checksums.txt`. Chosen over `buildGoModule` to avoid re-pinning `vendorHash` on every bump. |
+| herdr | 0.9.0 | `pkgs.herdr` from `nixos-unstable`. The maintained x86_64-darwin branch predates it, so that one target installs Herdr's checksummed upstream binary. |
+| omp | 18.1.21 | npm `@oh-my-pi/pi-coding-agent`, bun-wrapped. Published to npm only, `dist/cli.js` is a prebundled bun script. Per-platform natives resolve through `optionalDependencies`. |
+| skillshare | 0.20.29 | Prebuilt GitHub release tarball, sha256 from upstream `checksums.txt`. Chosen over `buildGoModule` to avoid re-pinning `vendorHash` on every bump. |
 
 `supermemory-mcp` is deliberately **not** a managed package. MCP v1 is deprecated
 upstream; the current form is a hosted endpoint (`https://mcp.supermemory.ai/mcp`)
@@ -40,13 +40,13 @@ native MCP adapter work, not the package list.
 
 ## Status
 
-The working tree targets v1.1.0. `cargo test` passes 131 tests, clippy `-D warnings` is clean, and
-the real stack capture discovered 4 OMP profiles and 4 plugins with MCP credentials externalized.
-A clean-machine smoke restore replayed every plugin profile, MCP file, and Skillshare
-`init --no-copy` / `sync --all` through isolated fake CLIs. Nix builds Synapse 1.1.0, OMP 18.0.4,
-Skillshare 0.20.25, and the complete harness; bash, zsh, and fish integration checks pass.
+v1.1.0 is released. Its portable-stack implementation captured four OMP profiles
+and four plugins with MCP credentials externalized; isolated fake-CLI restores
+replayed every profile, MCP file, and Skillshare `init --no-copy` / `sync --all`.
+The current tree targets v1.2.0; do not attribute v1.1 evidence to it until its
+own checks pass.
 
-**Released v1.0 evidence:**
+**Released v1.1 evidence:**
 
 - Real TUI install of all 3 packages through Nix; `state.json` + `install.log` written; exit 0
 - All 4 lifecycle stages under `env -i PATH=/usr/bin:/bin` (launchd-minimal environment)
@@ -55,8 +55,8 @@ Skillshare 0.20.25, and the complete harness; bash, zsh, and fish integration ch
 - Worker routing check verifies both bundled installer routes, the help route, and 404 behavior
 - GitHub CI run 22 passed on `master`, including the macOS/Linux platform matrix
 
-The v1.1 working tree has not run in CI because it is not committed. Do not attribute released or
-cross-platform evidence to these uncommitted stack changes.
+The v1.2.0 package refresh is unreleased. It needs its own CI, release tag,
+assets, and anonymous bootstrap verification before being called released.
 
 ---
 
@@ -76,6 +76,7 @@ src/
     update.rs rollback.rs uninstall.rs setup.rs auto_update.rs
     stack.rs capture/restore/status: OMP plugins, MCP portability, Skillshare Git handoff
 nix/
+  herdr.nix       upstream x86_64-darwin fallback while that Nixpkgs branch lacks Herdr
   skillshare.nix   prebuilt tarball per system, hashes from upstream checksums.txt
   omp.nix          buildNpmPackage + bun wrapper, per-platform natives asserted
   bun.nix          pinned bun; omp rejects nixpkgs' current version at runtime
@@ -102,7 +103,7 @@ Roughly 5.1k lines of Rust across `src/`.
 Break any of these and the pieces stop fitting together.
 
 **Release assets.** `synapse-<version>-<target>.tar.gz`, bare crate version with
-no leading `v` (tag `v1.1.0`, asset `synapse-1.1.0-...`). Exactly these 4
+no leading `v` (tag `vX.Y.Z`, asset `synapse-X.Y.Z-...`). Exactly these 4
 triples: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
 `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`. Each tarball holds one
 executable named `synapse` at archive root, nothing else. `checksums.txt` sits
@@ -220,7 +221,7 @@ for s in fresh-install update rollback uninstall; do
     SYNAPSE_BIN="$PWD/target/release/synapse" bash ci/lifecycle.sh "$s"
 done
 
-bash ci/install-check.sh                      # 26 assertions
+bash ci/install-check.sh                      # installer regression harness
 node ci/worker-check.mjs                      # 7 cases
 sh -n install.sh && shellcheck -s sh install.sh
 ```
@@ -234,7 +235,7 @@ code, it is decoration — delete it.
 
 ## CI
 
-`.github/workflows/ci.yml`, 8 jobs. `ci-passed` is the single required check.
+`.github/workflows/ci.yml` owns the single required `ci-passed` check.
 
 | Job | Covers |
 |---|---|
@@ -254,21 +255,19 @@ publish. `contents: write` is scoped to the release job only.
 
 ---
 
-## Blockers
+## Release status
 
-**v1.1 is unreleased.** The repository and v1.0.0 assets are now public; anonymous curl installation
-was verified end to end. The portable-stack, dedicated-profile, dependency-hardening, and package
-refresh changes still require owner-approved commit, CI, tag, release assets, and a second anonymous
-install against v1.1.0.
+**v1.1.0 is released.** The public repository and assets were verified through
+anonymous bootstrap.
 
-**Security alerts await the v1.1 push.** Full Git history passed Gitleaks (21 commits, zero leaks);
-GitHub secret scanning and push protection are enabled with zero alerts. Dependabot reports the
-old lockfile's `sharp` and `adm-zip` advisories; v1.1 overrides them to patched 0.35.0 and 0.6.0,
-and `npm audit --package-lock-only --omit=dev` reports zero vulnerabilities locally.
+**v1.2.0 is unreleased.** Merge, CI, a matching `v1.2.0` tag, release assets,
+and a second anonymous bootstrap still gate its release. The refreshed OMP lock
+raises `sharp` to 0.35.4 and `adm-zip` to 0.6.1, which are outside the reported
+vulnerable ranges.
 
 ---
 
-## v1.1 and beyond
+## Current scope and deferrals
 
 The working tree implements the OMP-centered portable stack:
 
