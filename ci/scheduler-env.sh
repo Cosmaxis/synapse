@@ -140,7 +140,7 @@ run_minimal "auto-update now" 0 auto-update now
 echo "== state commands (populated state) =="
 mkdir -p "$WORK/config/synapse"
 cat > "$WORK/config/synapse/state.json" <<'JSON'
-{"packages":{"herdr":{"version":"0.7.5","installed_at":1785542400}}}
+{"packages":{"herdr":{"version":"0.9.0","installed_at":1785542400}}}
 JSON
 
 run_minimal "update --all (installed)"    0 update --all
