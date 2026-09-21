@@ -8,6 +8,8 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::secrets;
+
 const STACK_VERSION: u32 = 1;
 const MANIFEST_FILE: &str = "stack.json";
 const DEFAULT_PROFILE: &str = "default";
@@ -59,11 +61,23 @@ struct SkillshareSource {
 }
 
 pub fn capture(output: Option<&Path>) -> io::Result<()> {
+    capture_inner(output, None)
+}
+
+pub fn capture_with_secrets(output: Option<&Path>) -> io::Result<()> {
+    let passphrase = secrets::prompt_new_passphrase()?;
+    capture_inner(output, Some(&passphrase))
+}
+
+fn capture_inner(
+    output: Option<&Path>,
+    passphrase: Option<&age::secrecy::SecretString>,
+) -> io::Result<()> {
     let output = match output {
         Some(output) => output.to_path_buf(),
         None => default_stack_dir()?,
     };
-    let manifest = capture_into(&output)?;
+    let (manifest, secret_count) = capture_into_inner(&output, passphrase)?;
     let plugin_count: usize = manifest
         .omp_profiles
         .iter()
@@ -74,6 +88,12 @@ pub fn capture(output: Option<&Path>) -> io::Result<()> {
         manifest.omp_profiles.len(),
         output.display()
     );
+    if passphrase.is_some() {
+        println!(
+            "Captured {secret_count} encrypted environment value(s) to {}",
+            output.join(secrets::STACK_SECRETS_FILE).display()
+        );
+    }
     if manifest.skillshare.is_none() {
         println!("Skillshare has no Git remote; skills remain local.");
     }
@@ -87,6 +107,27 @@ pub fn restore(
     trust: bool,
     force: bool,
 ) -> io::Result<()> {
+    restore_inner(input, remote, git_root, trust, force, false)
+}
+
+pub fn restore_with_secrets(
+    input: Option<&Path>,
+    remote: Option<&str>,
+    git_root: &str,
+    trust: bool,
+    force: bool,
+) -> io::Result<()> {
+    restore_inner(input, remote, git_root, trust, force, true)
+}
+
+fn restore_inner(
+    input: Option<&Path>,
+    remote: Option<&str>,
+    git_root: &str,
+    trust: bool,
+    force: bool,
+    restore_secrets: bool,
+) -> io::Result<()> {
     if let Some(remote) = remote {
         let already_initialized = skillshare_repository()?.is_some();
         ensure_skillshare_repository(remote, git_root)?;
@@ -97,7 +138,14 @@ pub fn restore(
                 "Review {} and local-plugins/ before restoring.",
                 stack.display()
             );
-            println!("Then run: synapse stack restore --trust");
+            println!(
+                "Then run: synapse stack restore --trust{}",
+                if restore_secrets {
+                    " --with-secrets"
+                } else {
+                    ""
+                }
+            );
             return Ok(());
         }
     }
@@ -114,9 +162,43 @@ pub fn restore(
     let manifest = read_manifest(&input)?;
     validate_manifest(&manifest)?;
     validate_skillshare_preflight(&manifest)?;
+    let secret_values = if restore_secrets {
+        let snapshot = input.join(secrets::STACK_SECRETS_FILE);
+        if !snapshot.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "encrypted secret snapshot is missing at {}; recapture with `synapse stack capture --with-secrets`",
+                    snapshot.display()
+                ),
+            ));
+        }
+        Some(secrets::read_snapshot(
+            &snapshot,
+            secrets::prompt_passphrase()?,
+        )?)
+    } else {
+        None
+    };
     restore_from(&input, &manifest, force)?;
+    if let Some(secret_values) = secret_values {
+        let local = install_secret_environment(&secret_values)?;
+        println!(
+            "Restored {} encrypted environment value(s) to {}; restart your shell to load them.",
+            secret_values.len(),
+            local.display()
+        );
+    } else if input.join(secrets::STACK_SECRETS_FILE).is_file() {
+        println!("Encrypted secrets are available; rerun with --with-secrets to restore them.");
+    }
     println!("Restored AI stack from {}", input.display());
     Ok(())
+}
+
+fn install_secret_environment(values: &BTreeMap<String, String>) -> io::Result<PathBuf> {
+    let local = secrets::write_local_environment(values)?;
+    super::setup::run(false)?;
+    Ok(local)
 }
 
 pub fn status(input: Option<&Path>) -> io::Result<()> {
@@ -175,7 +257,15 @@ fn default_stack_dir() -> io::Result<PathBuf> {
         })
 }
 
+#[cfg(test)]
 fn capture_into(output: &Path) -> io::Result<StackManifest> {
+    capture_into_inner(output, None).map(|(manifest, _)| manifest)
+}
+
+fn capture_into_inner(
+    output: &Path,
+    passphrase: Option<&age::secrecy::SecretString>,
+) -> io::Result<(StackManifest, usize)> {
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -209,8 +299,13 @@ fn capture_into(output: &Path) -> io::Result<StackManifest> {
         }
 
         let mut omp_profiles = Vec::new();
+        let mut secret_values = BTreeMap::new();
         for (name, root) in profiles {
-            let profile = capture_profile(&name, &root, &staging)?;
+            let profile = if passphrase.is_some() {
+                capture_profile(&name, &root, &staging, Some(&mut secret_values))?
+            } else {
+                capture_profile(&name, &root, &staging, None)?
+            };
             if !profile.plugins.is_empty() || profile.mcp.is_some() {
                 omp_profiles.push(profile);
             }
@@ -221,11 +316,20 @@ fn capture_into(output: &Path) -> io::Result<StackManifest> {
             skillshare: capture_skillshare()?,
         };
         write_json(&staging.join(MANIFEST_FILE), &manifest)?;
-        Ok(manifest)
+        if let Some(passphrase) = passphrase {
+            secrets::write_snapshot(
+                &staging.join(secrets::STACK_SECRETS_FILE),
+                &secret_values,
+                passphrase,
+            )?;
+        } else {
+            preserve_secret_snapshot(output, &staging)?;
+        }
+        Ok((manifest, secret_values.len()))
     })();
 
     match result {
-        Ok(manifest) => {
+        Ok(result) => {
             if output.exists() {
                 if !output.is_dir() {
                     fs::remove_dir_all(&staging).ok();
@@ -247,7 +351,7 @@ fn capture_into(output: &Path) -> io::Result<StackManifest> {
             } else {
                 fs::rename(&staging, output)?;
             }
-            Ok(manifest)
+            Ok(result)
         }
         Err(error) => {
             fs::remove_dir_all(&staging).ok();
@@ -256,7 +360,27 @@ fn capture_into(output: &Path) -> io::Result<StackManifest> {
     }
 }
 
-fn capture_profile(name: &str, root: &Path, staging: &Path) -> io::Result<OmpProfile> {
+fn preserve_secret_snapshot(output: &Path, staging: &Path) -> io::Result<()> {
+    let source = output.join(secrets::STACK_SECRETS_FILE);
+    if !source.exists() {
+        return Ok(());
+    }
+    if !fs::symlink_metadata(&source)?.file_type().is_file() {
+        return Err(invalid_data(format!(
+            "encrypted secret snapshot {} must be a regular file",
+            source.display()
+        )));
+    }
+    fs::copy(source, staging.join(secrets::STACK_SECRETS_FILE))?;
+    Ok(())
+}
+
+fn capture_profile(
+    name: &str,
+    root: &Path,
+    staging: &Path,
+    secret_values: Option<&mut BTreeMap<String, String>>,
+) -> io::Result<OmpProfile> {
     let plugins_dir = root.join("plugins");
     let package = read_json_optional(&plugins_dir.join("package.json"))?;
     let lock = read_json_optional(&plugins_dir.join("omp-plugins.lock.json"))?;
@@ -318,10 +442,16 @@ fn capture_profile(name: &str, root: &Path, staging: &Path) -> io::Result<OmpPro
 
     let mcp_path = root.join("agent").join("mcp.json");
     let (mcp, required_env) = match read_json_optional(&mcp_path)? {
-        Some(value) => {
-            let (portable, required_env) = portable_mcp(&value)?;
-            (Some(portable), required_env)
-        }
+        Some(value) => match secret_values {
+            Some(secret_values) => {
+                let (portable, required_env) = portable_mcp_with_secrets(&value, secret_values)?;
+                (Some(portable), required_env)
+            }
+            None => {
+                let (portable, required_env) = portable_mcp(&value)?;
+                (Some(portable), required_env)
+            }
+        },
         None => (None, Vec::new()),
     };
 
@@ -1015,12 +1145,22 @@ fn restore_from(input: &Path, manifest: &StackManifest, force: bool) -> io::Resu
         let omp_bin = std::env::var_os("SYNAPSE_OMP_BIN")
             .map(std::path::PathBuf::from)
             .filter(|p| p.exists())
-            .or_else(|| if has_which("omp") { Some(std::path::PathBuf::from("omp")) } else { None })
+            .or_else(|| {
+                if has_which("omp") {
+                    Some(std::path::PathBuf::from("omp"))
+                } else {
+                    None
+                }
+            })
             .or_else(|| {
                 // Also check the Nix profile bin
                 let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
                 let p = home.join(".local/share/synapse/profile/bin/omp");
-                if p.is_file() { Some(p) } else { None }
+                if p.is_file() {
+                    Some(p)
+                } else {
+                    None
+                }
             });
         let has_omp = omp_bin.is_some() || omp_root().map(|p| p.exists()).unwrap_or(false);
         if !has_omp {
@@ -1511,7 +1651,8 @@ fn is_env_var_name(s: &str) -> bool {
     // Env var names are typically UPPER_SNAKE like JIRA_URL, SONARQUBE_TOKEN
     !s.is_empty()
         && s.len() <= 64
-        && s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        && s.chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
         && s.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
@@ -1586,6 +1727,20 @@ fn invalid_input(message: impl Into<String>) -> io::Error {
 }
 
 fn portable_mcp(input: &Value) -> io::Result<(Value, Vec<String>)> {
+    portable_mcp_inner(input, None)
+}
+
+fn portable_mcp_with_secrets(
+    input: &Value,
+    secret_values: &mut BTreeMap<String, String>,
+) -> io::Result<(Value, Vec<String>)> {
+    portable_mcp_inner(input, Some(secret_values))
+}
+
+fn portable_mcp_inner(
+    input: &Value,
+    mut secret_values: Option<&mut BTreeMap<String, String>>,
+) -> io::Result<(Value, Vec<String>)> {
     let mut portable = input.clone();
     let mut required_env = BTreeSet::new();
     {
@@ -1644,12 +1799,27 @@ fn portable_mcp(input: &Value) -> io::Result<(Value, Vec<String>)> {
             validate_mcp_server_shape(server_name, server)?;
 
             if let Some(env) = server.get_mut("env") {
-                sanitize_env(server_name, env, &mut required_env)?;
+                sanitize_env(
+                    server_name,
+                    env,
+                    &mut required_env,
+                    secret_values.as_deref_mut(),
+                )?;
             }
             if let Some(headers) = server.get_mut("headers") {
-                sanitize_headers(server_name, headers, &mut required_env)?;
+                sanitize_headers(
+                    server_name,
+                    headers,
+                    &mut required_env,
+                    secret_values.as_deref_mut(),
+                )?;
             }
-            collect_arg_environment(server_name, server.get("args"), &mut required_env)?;
+            collect_arg_environment(
+                server_name,
+                server.get("args"),
+                &mut required_env,
+                secret_values.as_deref_mut(),
+            )?;
             for field in ["auth", "oauth"] {
                 if let Some(value) = server.get_mut(field) {
                     sanitize_secret_fields(
@@ -1657,11 +1827,16 @@ fn portable_mcp(input: &Value) -> io::Result<(Value, Vec<String>)> {
                         &[field.to_string()],
                         value,
                         &mut required_env,
+                        secret_values.as_deref_mut(),
                     )?;
                 }
             }
             reject_unhandled_secrets(server_name, server)?;
-            collect_environment_references(&Value::Object(server.clone()), &mut required_env)?;
+            collect_environment_references(
+                &Value::Object(server.clone()),
+                &mut required_env,
+                secret_values.as_deref_mut(),
+            )?;
         }
     }
 
@@ -1779,21 +1954,24 @@ fn reject_unknown_keys(
 fn collect_environment_references(
     value: &Value,
     required_env: &mut BTreeSet<String>,
+    mut secret_values: Option<&mut BTreeMap<String, String>>,
 ) -> io::Result<()> {
     match value {
         Value::Object(object) => {
             for child in object.values() {
-                collect_environment_references(child, required_env)?;
+                collect_environment_references(child, required_env, secret_values.as_deref_mut())?;
             }
         }
         Value::Array(items) => {
             for child in items {
-                collect_environment_references(child, required_env)?;
+                collect_environment_references(child, required_env, secret_values.as_deref_mut())?;
             }
         }
         Value::String(text) => {
             if let Some(references) = indirection_references(text)? {
-                required_env.extend(references);
+                for name in references {
+                    record_environment_value(&name, required_env, secret_values.as_deref_mut())?;
+                }
             }
         }
         _ => {}
@@ -1848,6 +2026,7 @@ fn collect_arg_environment(
     server_name: &str,
     value: Option<&Value>,
     required_env: &mut BTreeSet<String>,
+    mut secret_values: Option<&mut BTreeMap<String, String>>,
 ) -> io::Result<()> {
     let Some(value) = value else {
         return Ok(());
@@ -1865,16 +2044,79 @@ fn collect_arg_environment(
     }
     for pair in strings.windows(2) {
         if matches!(pair[0], "-e" | "--env") && valid_env_name(pair[1]) {
-            required_env.insert(pair[1].to_string());
+            record_environment_value(pair[1], required_env, secret_values.as_deref_mut())?;
         }
     }
     Ok(())
+}
+
+fn record_environment_value(
+    name: &str,
+    required_env: &mut BTreeSet<String>,
+    secret_values: Option<&mut BTreeMap<String, String>>,
+) -> io::Result<()> {
+    required_env.insert(name.to_string());
+    if name == "HOME" {
+        return Ok(());
+    }
+    let Some(secret_values) = secret_values else {
+        return Ok(());
+    };
+    if secret_values.contains_key(name) {
+        return Ok(());
+    }
+    let value = env::var(name).map_err(|_| {
+        invalid_data(format!(
+            "required environment value {name:?} is unavailable; set it before capturing encrypted secrets"
+        ))
+    })?;
+    record_secret_value(secret_values, name, value)
+}
+
+fn record_secret_value(
+    secret_values: &mut BTreeMap<String, String>,
+    name: &str,
+    value: String,
+) -> io::Result<()> {
+    if let Some(existing) = secret_values.get(name) {
+        if existing != &value {
+            return Err(invalid_data(format!(
+                "encrypted secret snapshot has conflicting values for {name:?}"
+            )));
+        }
+        return Ok(());
+    }
+    secret_values.insert(name.to_string(), value);
+    Ok(())
+}
+
+fn resolve_secret_command(value: &str) -> io::Result<String> {
+    if !safe_secret_command(value) {
+        return Err(invalid_data(
+            "MCP secret command is not a recognized credential resolver",
+        ));
+    }
+    let command = value.trim_start_matches('!').trim_start();
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .output()
+        .map_err(|error| io::Error::new(error.kind(), "failed to resolve MCP secret command"))?;
+    if !output.status.success() {
+        return Err(invalid_data(
+            "MCP secret command failed while capturing encrypted secrets",
+        ));
+    }
+    let value = String::from_utf8(output.stdout)
+        .map_err(|_| invalid_data("MCP secret command returned non-UTF-8 output"))?;
+    Ok(value.trim_end_matches(['\r', '\n']).to_string())
 }
 
 fn sanitize_env(
     server_name: &str,
     value: &mut Value,
     required_env: &mut BTreeSet<String>,
+    mut secret_values: Option<&mut BTreeMap<String, String>>,
 ) -> io::Result<()> {
     let env = value
         .as_object_mut()
@@ -1886,25 +2128,35 @@ fn sanitize_env(
                 "MCP server {server_name:?} has invalid env name {name:?}"
             )));
         }
-        let current = value.as_str().ok_or_else(|| {
-            invalid_data(format!(
-                "MCP server {server_name:?} env value {name:?} must be a string"
-            ))
-        })?;
-        if let Some(references) = secret_indirection_references(current, false)? {
-            required_env.extend(references);
+        let current = value
+            .as_str()
+            .ok_or_else(|| {
+                invalid_data(format!(
+                    "MCP server {server_name:?} env value {name:?} must be a string"
+                ))
+            })?
+            .to_string();
+        if current.starts_with('!') && secret_values.is_some() {
+            let variable = name.clone();
+            let resolved = resolve_secret_command(&current)?;
+            record_secret_value(secret_values.as_deref_mut().unwrap(), &variable, resolved)?;
+            *value = Value::String(variable.clone());
+            required_env.insert(variable);
             continue;
         }
-        if current == name && valid_env_name(name) {
-            required_env.insert(name.clone());
+        if let Some(references) = secret_indirection_references(&current, false)? {
+            for name in references {
+                record_environment_value(&name, required_env, secret_values.as_deref_mut())?;
+            }
+            continue;
+        }
+        if current == *name {
+            record_environment_value(name, required_env, secret_values.as_deref_mut())?;
             continue;
         }
 
-        let variable = if valid_env_name(name) {
-            name.clone()
-        } else {
-            generated_variable(server_name, &["env", name])
-        };
+        let variable = name.clone();
+        record_secret_value_if_requested(secret_values.as_deref_mut(), &variable, current)?;
         *value = Value::String(variable.clone());
         required_env.insert(variable);
     }
@@ -1915,6 +2167,7 @@ fn sanitize_headers(
     server_name: &str,
     value: &mut Value,
     required_env: &mut BTreeSet<String>,
+    mut secret_values: Option<&mut BTreeMap<String, String>>,
 ) -> io::Result<()> {
     let headers = value.as_object_mut().ok_or_else(|| {
         invalid_data(format!(
@@ -1928,22 +2181,39 @@ fn sanitize_headers(
                 "MCP server {server_name:?} has invalid header name {name:?}"
             )));
         }
-        let current = value.as_str().ok_or_else(|| {
-            invalid_data(format!(
-                "MCP server {server_name:?} header {name:?} must be a string"
-            ))
-        })?;
+        let current = value
+            .as_str()
+            .ok_or_else(|| {
+                invalid_data(format!(
+                    "MCP server {server_name:?} header {name:?} must be a string"
+                ))
+            })?
+            .to_string();
         let authorization = name.eq_ignore_ascii_case("Authorization");
-        if let Some(references) = secret_indirection_references(current, authorization)? {
-            required_env.extend(references);
+        let variable = generated_variable(server_name, &["headers", name]);
+        if current.starts_with('!') && secret_values.is_some() {
+            let resolved = resolve_secret_command(&current)?;
+            record_secret_value(secret_values.as_deref_mut().unwrap(), &variable, resolved)?;
+            *value = Value::String(format!("${{{variable}}}"));
+            required_env.insert(variable);
+            continue;
+        }
+        if let Some(references) = secret_indirection_references(&current, authorization)? {
+            for name in references {
+                record_environment_value(&name, required_env, secret_values.as_deref_mut())?;
+            }
             continue;
         }
 
-        let variable = generated_variable(server_name, &["headers", name]);
         let prefix = authorization
-            .then(|| auth_scheme_prefix(current))
+            .then(|| auth_scheme_prefix(&current))
             .flatten()
             .unwrap_or("");
+        record_secret_value_if_requested(
+            secret_values.as_deref_mut(),
+            &variable,
+            current[prefix.len()..].to_string(),
+        )?;
         *value = Value::String(format!("{prefix}${{{variable}}}"));
         required_env.insert(variable);
     }
@@ -1961,6 +2231,7 @@ fn sanitize_secret_fields(
     path: &[String],
     value: &mut Value,
     required_env: &mut BTreeSet<String>,
+    mut secret_values: Option<&mut BTreeMap<String, String>>,
 ) -> io::Result<()> {
     let field = path.first().map(String::as_str).unwrap_or_default();
     let object = value.as_object_mut().ok_or_else(|| {
@@ -1998,15 +2269,26 @@ fn sanitize_secret_fields(
 
     for (name, child) in object {
         if sensitive_key(name) {
-            let current = child.as_str().ok_or_else(|| {
-                invalid_data(format!(
-                    "MCP server {server_name:?} secret field {field}.{name} must be a string"
-                ))
-            })?;
-            if let Some(references) = secret_indirection_references(current, false)? {
-                required_env.extend(references);
+            let current = child
+                .as_str()
+                .ok_or_else(|| {
+                    invalid_data(format!(
+                        "MCP server {server_name:?} secret field {field}.{name} must be a string"
+                    ))
+                })?
+                .to_string();
+            let variable = generated_variable(server_name, &[field, name]);
+            if current.starts_with('!') && secret_values.is_some() {
+                let resolved = resolve_secret_command(&current)?;
+                record_secret_value(secret_values.as_deref_mut().unwrap(), &variable, resolved)?;
+                *child = Value::String(format!("${{{variable}}}"));
+                required_env.insert(variable);
+            } else if let Some(references) = secret_indirection_references(&current, false)? {
+                for name in references {
+                    record_environment_value(&name, required_env, secret_values.as_deref_mut())?;
+                }
             } else {
-                let variable = generated_variable(server_name, &[field, name]);
+                record_secret_value_if_requested(secret_values.as_deref_mut(), &variable, current)?;
                 *child = Value::String(format!("${{{variable}}}"));
                 required_env.insert(variable);
             }
@@ -2017,6 +2299,17 @@ fn sanitize_secret_fields(
                 )));
             }
         }
+    }
+    Ok(())
+}
+
+fn record_secret_value_if_requested(
+    secret_values: Option<&mut BTreeMap<String, String>>,
+    name: &str,
+    value: String,
+) -> io::Result<()> {
+    if let Some(secret_values) = secret_values {
+        record_secret_value(secret_values, name, value)?;
     }
     Ok(())
 }
@@ -2415,6 +2708,12 @@ mod tests {
             env::set_var(name, value);
             Self { name, previous }
         }
+
+        fn set_text(name: &'static str, value: &str) -> Self {
+            let previous = env::var_os(name);
+            env::set_var(name, value);
+            Self { name, previous }
+        }
     }
 
     impl Drop for EnvGuard {
@@ -2497,6 +2796,94 @@ mod tests {
                 "SYNAPSE_MCP_GITHUB_HEADERS_X_MODE",
             ]
         );
+    }
+
+    #[test]
+    fn portable_mcp_with_secrets_tracks_literal_indirect_and_command_values() {
+        let _lock = crate::test_utils::XDG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _host = EnvGuard::set_text("SYNAPSE_STACK_TEST_HOST", "mcp.example.test");
+        let _external = EnvGuard::set_text("SYNAPSE_STACK_TEST_EXTERNAL", "external-secret");
+        let _command = EnvGuard::set_text("SYNAPSE_STACK_TEST_COMMAND", "command-secret");
+        let _argument = EnvGuard::set_text("SYNAPSE_STACK_TEST_ARGUMENT", "argument-secret");
+        let input = json!({
+            "mcpServers": {
+                "service": {
+                    "type": "http",
+                    "url": "https://${SYNAPSE_STACK_TEST_HOST}/mcp",
+                    "args": ["-e", "SYNAPSE_STACK_TEST_ARGUMENT"],
+                    "env": {
+                        "PASSWORD": "literal-password",
+                        "REFERENCED": "${SYNAPSE_STACK_TEST_EXTERNAL}",
+                        "FROM_COMMAND": "!printenv SYNAPSE_STACK_TEST_COMMAND"
+                    },
+                    "headers": {
+                        "Authorization": "Bearer header-secret",
+                        "X-Mode": "stable"
+                    },
+                    "auth": {
+                        "clientSecret": "auth-secret"
+                    },
+                    "oauth": {
+                        "clientSecret": "oauth-secret"
+                    }
+                }
+            }
+        });
+        let mut values = BTreeMap::new();
+
+        let (portable, required_env) = portable_mcp_with_secrets(&input, &mut values).unwrap();
+        let encoded = serde_json::to_string(&portable).unwrap();
+
+        assert!(!encoded.contains("literal-password"));
+        assert!(!encoded.contains("header-secret"));
+        assert!(!encoded.contains("auth-secret"));
+        assert_eq!(
+            portable["mcpServers"]["service"]["env"]["FROM_COMMAND"],
+            "FROM_COMMAND"
+        );
+        assert_eq!(
+            portable["mcpServers"]["service"]["headers"]["Authorization"],
+            "Bearer ${SYNAPSE_MCP_SERVICE_HEADERS_AUTHORIZATION}"
+        );
+        assert_eq!(
+            values,
+            BTreeMap::from([
+                ("FROM_COMMAND".to_string(), "command-secret".to_string()),
+                ("PASSWORD".to_string(), "literal-password".to_string()),
+                (
+                    "SYNAPSE_STACK_TEST_EXTERNAL".to_string(),
+                    "external-secret".to_string(),
+                ),
+                (
+                    "SYNAPSE_MCP_SERVICE_AUTH_CLIENT_SECRET".to_string(),
+                    "auth-secret".to_string(),
+                ),
+                (
+                    "SYNAPSE_MCP_SERVICE_HEADERS_AUTHORIZATION".to_string(),
+                    "header-secret".to_string(),
+                ),
+                (
+                    "SYNAPSE_MCP_SERVICE_HEADERS_X_MODE".to_string(),
+                    "stable".to_string(),
+                ),
+                (
+                    "SYNAPSE_MCP_SERVICE_OAUTH_CLIENT_SECRET".to_string(),
+                    "oauth-secret".to_string(),
+                ),
+                (
+                    "SYNAPSE_STACK_TEST_ARGUMENT".to_string(),
+                    "argument-secret".to_string(),
+                ),
+                (
+                    "SYNAPSE_STACK_TEST_HOST".to_string(),
+                    "mcp.example.test".to_string(),
+                ),
+            ])
+        );
+        assert!(required_env.contains(&"SYNAPSE_STACK_TEST_HOST".to_string()));
+        assert!(required_env.contains(&"SYNAPSE_STACK_TEST_ARGUMENT".to_string()));
     }
 
     #[test]
@@ -2831,6 +3218,155 @@ mod tests {
         assert!(!fs::read_to_string(output.join(MANIFEST_FILE))
             .unwrap()
             .contains("literal-secret"));
+        fs::write(
+            output.join(secrets::STACK_SECRETS_FILE),
+            b"existing encrypted snapshot",
+        )
+        .unwrap();
+        capture_into(&output).unwrap();
+        assert_eq!(
+            fs::read(output.join(secrets::STACK_SECRETS_FILE)).unwrap(),
+            b"existing encrypted snapshot"
+        );
+
+        fs::remove_dir_all(temp).ok();
+    }
+
+    #[test]
+    fn capture_with_secrets_writes_an_encrypted_snapshot() {
+        let _lock = crate::test_utils::XDG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tmpdir("encrypted-capture");
+        let omp = temp.join("omp");
+        let output = temp.join("stack");
+        let missing_skillshare = temp.join("missing-skillshare.yaml");
+        let _omp = EnvGuard::set("SYNAPSE_OMP_DIR", &omp);
+        let _skillshare = EnvGuard::set("SYNAPSE_SKILLSHARE_CONFIG", &missing_skillshare);
+        fs::create_dir_all(omp.join("agent")).unwrap();
+        fs::write(
+            omp.join("agent/mcp.json"),
+            serde_json::to_vec(&json!({
+                "mcpServers": {
+                    "service": {
+                        "command": "npx",
+                        "env": {"SERVICE_TOKEN": "literal-secret"}
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let passphrase = age::secrecy::SecretString::from("test passphrase".to_string());
+
+        let (manifest, count) = capture_into_inner(&output, Some(&passphrase)).unwrap();
+        let ciphertext = fs::read(output.join(secrets::STACK_SECRETS_FILE)).unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(manifest.omp_profiles[0].required_env, vec!["SERVICE_TOKEN"]);
+        assert!(!ciphertext
+            .windows(b"literal-secret".len())
+            .any(|window| window == b"literal-secret"));
+        assert_eq!(
+            secrets::read_snapshot(
+                &output.join(secrets::STACK_SECRETS_FILE),
+                age::secrecy::SecretString::from("test passphrase".to_string()),
+            )
+            .unwrap(),
+            BTreeMap::from([("SERVICE_TOKEN".to_string(), "literal-secret".to_string())])
+        );
+
+        fs::remove_dir_all(temp).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn encrypted_stack_round_trip_restores_a_clean_shell() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = crate::test_utils::XDG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tmpdir("encrypted-stack-e2e");
+        let source_omp = temp.join("source-omp");
+        let target_omp = temp.join("target-omp");
+        let target_home = temp.join("target-home");
+        let target_config = temp.join("target-config");
+        let stack = temp.join("stack");
+        let missing_skillshare = temp.join("missing-skillshare.yaml");
+        const SECRET: &str = "synthetic e2e credential 'with quote'";
+        const ENV_NAME: &str = "SYNAPSE_STACK_E2E_TOKEN";
+
+        fs::create_dir_all(source_omp.join("agent")).unwrap();
+        fs::write(
+            source_omp.join("agent/mcp.json"),
+            serde_json::to_vec(&json!({
+                "mcpServers": {
+                    "synthetic": {
+                        "command": "printf",
+                        "env": {ENV_NAME: SECRET}
+                    }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let passphrase = age::secrecy::SecretString::from("test passphrase".to_string());
+        let (manifest, count) = {
+            let _omp = EnvGuard::set("SYNAPSE_OMP_DIR", &source_omp);
+            let _skillshare = EnvGuard::set("SYNAPSE_SKILLSHARE_CONFIG", &missing_skillshare);
+            capture_into_inner(&stack, Some(&passphrase)).unwrap()
+        };
+
+        let manifest_text = fs::read_to_string(stack.join(MANIFEST_FILE)).unwrap();
+        let ciphertext = fs::read(stack.join(secrets::STACK_SECRETS_FILE)).unwrap();
+        assert_eq!(count, 1);
+        assert!(!manifest_text.contains(SECRET));
+        assert!(!ciphertext
+            .windows(SECRET.len())
+            .any(|window| window == SECRET.as_bytes()));
+
+        let values = secrets::read_snapshot(
+            &stack.join(secrets::STACK_SECRETS_FILE),
+            age::secrecy::SecretString::from("test passphrase".to_string()),
+        )
+        .unwrap();
+        assert_eq!(values[ENV_NAME], SECRET);
+
+        fs::create_dir_all(&target_home).unwrap();
+        fs::write(target_home.join(".bashrc"), "# target shell\n").unwrap();
+        let _omp = EnvGuard::set("SYNAPSE_OMP_DIR", &target_omp);
+        let _home = EnvGuard::set("HOME", &target_home);
+        let _config = EnvGuard::set("XDG_CONFIG_HOME", &target_config);
+        let _shell = EnvGuard::set_text("SHELL", "/bin/bash");
+        restore_from(&stack, &manifest, false).unwrap();
+        let local = install_secret_environment(&values).unwrap();
+
+        assert_eq!(
+            fs::metadata(&local).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            read_json_optional(&target_omp.join("agent/mcp.json"))
+                .unwrap()
+                .unwrap()["mcpServers"]["synthetic"]["env"][ENV_NAME],
+            ENV_NAME
+        );
+        let output = Command::new("bash")
+            .args([
+                "--noprofile",
+                "--norc",
+                "-c",
+                ". \"$1\"; printf '%s' \"$SYNAPSE_STACK_E2E_TOKEN\"",
+                "bash",
+                target_home.join(".bashrc").to_str().unwrap(),
+            ])
+            .env("HOME", &target_home)
+            .env("XDG_CONFIG_HOME", &target_config)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, SECRET.as_bytes());
 
         fs::remove_dir_all(temp).ok();
     }
@@ -3097,6 +3633,55 @@ mod tests {
                 .unwrap()["plugins"]["@example/plugin"]["enabled"],
             true
         );
+
+        fs::remove_dir_all(temp).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restored_secrets_are_persisted_and_loaded_by_bash() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = crate::test_utils::XDG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tmpdir("secret-restore");
+        let home = temp.join("home");
+        let config = temp.join("config");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join(".bashrc"), "").unwrap();
+        let _home = EnvGuard::set("HOME", &home);
+        let _config = EnvGuard::set("XDG_CONFIG_HOME", &config);
+        let _shell = EnvGuard::set_text("SHELL", "/bin/bash");
+        let values = BTreeMap::from([(
+            "SYNAPSE_STACK_RESTORED_SECRET".to_string(),
+            "quoted ' value".to_string(),
+        )]);
+
+        let local = install_secret_environment(&values).unwrap();
+        let output = Command::new("bash")
+            .args([
+                "--noprofile",
+                "--norc",
+                "-c",
+                ". \"$1\"; printf '%s' \"$SYNAPSE_STACK_RESTORED_SECRET\"",
+                "bash",
+                home.join(".bashrc").to_str().unwrap(),
+            ])
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &config)
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            fs::metadata(&local).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(fs::read_to_string(home.join(".bashrc"))
+            .unwrap()
+            .contains("secrets.env"));
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"quoted ' value");
 
         fs::remove_dir_all(temp).ok();
     }

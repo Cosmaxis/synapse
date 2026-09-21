@@ -14,8 +14,8 @@ synapse status               # platform, Nix, installed packages
 synapse update --all         # update everything
 synapse rollback             # revert to the previous versions
 synapse auto-update enable   # schedule daily update checks
-synapse stack capture       # capture OMP plugins/MCP into tracked Git
-synapse stack restore --trust  # restore after reviewing the captured code/config
+synapse stack capture --with-secrets       # capture stack plus encrypted MCP values
+synapse stack restore --trust --with-secrets  # restore reviewed code/config and prompt once
 ```
 
 ## Why
@@ -83,8 +83,8 @@ yourself rather than having Synapse do it on your behalf.
 | `synapse log` | Install and update history |
 | `synapse setup-shell` | Configure PATH and shell completions |
 | `synapse auto-update …` | `enable`, `disable`, `config`, `now`, `status` |
-| `synapse stack capture` | Capture OMP profiles, plugins, MCP definitions, and Skillshare Git source |
-| `synapse stack restore --trust` | Restore reviewed executable stack content; `--remote` bootstraps Skillshare |
+| `synapse stack capture [--with-secrets]` | Capture OMP profiles, plugins, MCP definitions, and optionally encrypted MCP values |
+| `synapse stack restore --trust [--with-secrets]` | Restore reviewed executable stack content; `--remote` bootstraps Skillshare |
 | `synapse stack status` | Validate the capture and report missing environment variables |
 | `synapse version` | Version, git commit, target triple |
 
@@ -111,7 +111,7 @@ resources. Synapse stores its portable stack at `.synapse/stack` inside Skillsha
 On the existing machine:
 
 ```bash
-synapse stack capture
+synapse stack capture --with-secrets
 git -C ~/.config/skillshare add .synapse
 git -C ~/.config/skillshare commit -m "Update AI stack"
 git -C ~/.config/skillshare push
@@ -132,7 +132,7 @@ packages and stdio MCP commands execute as your user. Then apply the reviewed co
 
 ```bash
 synapse stack status
-synapse stack restore --trust
+synapse stack restore --trust --with-secrets
 ```
 
 The restore flow:
@@ -142,16 +142,35 @@ The restore flow:
 - preserves full-SHA Git origins, and snapshots dirty or unmanaged local plugins;
 - restores every OMP profile's plugin enablement and selected features;
 - excludes plugin settings because their arbitrary schema cannot be proven credential-free;
-- converts MCP environment values and headers to environment references;
-- preserves supported credential commands such as `gh auth token`, `security`, `pass`, and `op`;
+- converts MCP environment values, headers, and supported auth fields to environment references;
+- preserves supported credential commands (`gh auth token`, `security`, `pass`, and `op`) without
+  `--with-secrets`; the encrypted flow captures their resolved values instead.
 - rewrites paths under the old home directory to `${HOME}`.
 
-MCP credentials are externalized, and plugin settings are excluded from `stack.json`.
-`synapse stack status` lists environment variables required on the new machine. Capture also rejects
-likely secret files (`.env`, private keys, credential JSON, package-manager auth files) in local
-plugin snapshots, but snapshots are source archives—not a general-purpose secret scanner. Review
-them before committing. Unsupported MCP fields, unpinned registry state, escaping symlinks, and
-unlocked local dependencies fail capture.
+### Encrypted credential sync
+
+`stack.json` remains secret-free. `synapse stack capture --with-secrets` writes a sibling
+`.synapse/stack/secrets.age` containing the portable MCP environment values, headers, supported
+auth secrets, and values from supported credential commands. It is an authenticated
+age/scrypt passphrase-encrypted file and is safe to commit with `stack.json`.
+
+The passphrase is never written to Git, a command line, or Synapse state. On the target machine,
+`synapse stack restore --trust --with-secrets` prompts once, decrypts the tracked snapshot, and
+writes `${XDG_CONFIG_HOME:-~/.config}/synapse/secrets.env` with mode `0600`. Synapse-managed
+bash, zsh, and fish startup blocks source that local file; start a new shell before using OMP.
+Cryptographic protection necessarily requires that one passphrase entry (or a future hardware/key
+identity) on a new machine.
+
+A normal `synapse stack capture` preserves an existing `secrets.age`; use `--with-secrets` whenever
+the source credential values changed.
+
+Plugin settings remain excluded. They have an arbitrary schema and may contain executable or
+unknown credential formats; encrypted MCP synchronization does not make them portable.
+
+Capture also rejects likely secret files (`.env`, private keys, credential JSON, package-manager
+auth files) in local plugin snapshots, but snapshots are source archives—not a general-purpose
+secret scanner. Review them before committing. Unsupported MCP fields, unpinned registry state,
+escaping symlinks, and unlocked local dependencies fail capture.
 
 MCP capture currently covers OMP-native user/profile files (`agent/mcp.json`). Skillshare covers
 cross-tool skills and agents; native MCP writers for other AI clients are not implemented.

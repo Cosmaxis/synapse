@@ -95,6 +95,30 @@ impl Shell {
             .to_string(),
         }
     }
+
+    fn secret_environment_snippet(self) -> &'static str {
+        match self {
+            Shell::Bash | Shell::Zsh => concat!(
+                "# Synapse encrypted secrets\n",
+                "_synapse_secrets=\"${XDG_CONFIG_HOME:-$HOME/.config}/synapse/secrets.env\"\n",
+                "if [ -r \"$_synapse_secrets\" ]; then\n",
+                "  . \"$_synapse_secrets\"\n",
+                "fi\n",
+                "unset _synapse_secrets\n",
+            ),
+            Shell::Fish => concat!(
+                "# Synapse encrypted secrets\n",
+                "if set -q XDG_CONFIG_HOME; and test -n \"$XDG_CONFIG_HOME\"\n",
+                "    set -l synapse_secrets \"$XDG_CONFIG_HOME/synapse/secrets.env\"\n",
+                "else\n",
+                "    set -l synapse_secrets \"$HOME/.config/synapse/secrets.env\"\n",
+                "end\n",
+                "if test -r \"$synapse_secrets\"\n",
+                "    source \"$synapse_secrets\"\n",
+                "end\n",
+            ),
+        }
+    }
 }
 
 /// Every shell Synapse can configure.
@@ -315,6 +339,7 @@ pub fn strip_block(content: &str) -> String {
 /// different result than the real run produces.
 pub fn managed_body(shell: Shell, completion_line: Option<&str>) -> String {
     let mut body = shell.path_snippet();
+    body.push_str(shell.secret_environment_snippet());
     if let Some(line) = completion_line {
         body.push_str(line);
         if !line.ends_with('\n') {
@@ -519,15 +544,15 @@ pub fn next_steps(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!(
             "synapse-shell-{tag}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .subsec_nanos()
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&d).unwrap();
         d
@@ -971,6 +996,40 @@ mod tests {
         let without = managed_body(Shell::Bash, None);
         assert!(with.contains("synapse.bash"), "completion loader missing");
         assert!(with.starts_with(&without), "path snippet must come first");
+        assert!(
+            managed_body(Shell::Fish, None)
+                .contains("set -q XDG_CONFIG_HOME; and test -n \"$XDG_CONFIG_HOME\""),
+            "fish must treat an empty XDG_CONFIG_HOME like the standard fallback"
+        );
+    }
+
+    #[test]
+    fn bash_secret_snippet_sources_local_environment() {
+        let home = tmpdir("secrets");
+        let config = home.join("config");
+        let secrets = config.join("synapse/secrets.env");
+        fs::create_dir_all(secrets.parent().unwrap()).unwrap();
+        fs::write(&secrets, "export SYNAPSE_STACK_SHELL_TEST='quoted value'\n").unwrap();
+        let snippet = home.join("snippet.sh");
+        fs::write(&snippet, Shell::Bash.secret_environment_snippet()).unwrap();
+
+        let output = std::process::Command::new("bash")
+            .args([
+                "--noprofile",
+                "--norc",
+                "-c",
+                ". \"$1\"; printf '%s' \"$SYNAPSE_STACK_SHELL_TEST\"",
+                "bash",
+                snippet.to_str().unwrap(),
+            ])
+            .env("HOME", &home)
+            .env("XDG_CONFIG_HOME", &config)
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"quoted value");
+        fs::remove_dir_all(home).ok();
     }
 
     #[test]

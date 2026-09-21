@@ -4,8 +4,8 @@ Orientation for an agent or engineer picking this repo up cold. Read this before
 touching code. It records what is built, what is proven, what is deliberately
 deferred, and the traps that already cost time.
 
-Last updated: 2026-09-14. v1.1.0 was released on 2026-08-26; v1.2.0 is the
-current development target.
+Last updated: 2026-09-15. v1.1.0 was released on 2026-08-26 and v1.2.0 on
+2026-09-15. The current tree adds unreleased encrypted portable-secret sync.
 
 ---
 
@@ -13,13 +13,13 @@ current development target.
 
 Synapse installs and version-manages an AI coding harness, then captures the user's portable OMP
 stack into Skillshare's tracked Git repository. Nix resolves packages; Git carries skills, agents,
-plugin origins/snapshots, and secret-free MCP definitions.
+plugin origins/snapshots, secret-free MCP definitions, and optional encrypted secret snapshots.
 
 ```
 synapse install                                          # TUI package selector
-synapse stack capture                                    # write .synapse/stack in Skillshare Git
+synapse stack capture --with-secrets                     # write .synapse/stack in Skillshare Git
 synapse stack restore --remote <git-url> --git-root root # clone only
-synapse stack restore --trust                            # apply reviewed stack
+synapse stack restore --trust --with-secrets             # apply reviewed stack and secrets
 synapse auto-update enable                               # daily scheduler
 ```
 
@@ -40,11 +40,10 @@ native MCP adapter work, not the package list.
 
 ## Status
 
-v1.1.0 is released. Its portable-stack implementation captured four OMP profiles
-and four plugins with MCP credentials externalized; isolated fake-CLI restores
-replayed every profile, MCP file, and Skillshare `init --no-copy` / `sync --all`.
-The current tree targets v1.2.0; do not attribute v1.1 evidence to it until its
-own checks pass.
+v1.1.0 and v1.2.0 are released. v1.1's portable-stack implementation captured
+four OMP profiles and four plugins with MCP credentials externalized; isolated
+fake-CLI restores replayed every profile, MCP file, and Skillshare `init --no-copy`
+and `sync --all`. The encrypted portable-secret work in this tree is unreleased.
 
 **Released v1.1 evidence:**
 
@@ -55,8 +54,8 @@ own checks pass.
 - Worker routing check verifies both bundled installer routes, the help route, and 404 behavior
 - GitHub CI run 22 passed on `master`, including the macOS/Linux platform matrix
 
-The v1.2.0 package refresh is unreleased. It needs its own CI, release tag,
-assets, and anonymous bootstrap verification before being called released.
+v1.2.0 was released from tag `v1.2.0` on 2026-09-15 with all four target assets
+and an anonymous aarch64-darwin bootstrap verification.
 
 ---
 
@@ -69,6 +68,7 @@ src/
   nix.rs           Nix discovery + version floor (2.24). resolve_bin() lives here
   state.rs         state.json read/write + PID lock. Atomic write-then-rename
   shell.rs         rc-file splicing with sentinel markers, bash/zsh/fish
+  secrets.rs       age/scrypt snapshots, hidden prompts, private local secret environment
   tui.rs           ratatui installer: selector, progress, per-package build
   test_utils.rs    XDG_ENV_LOCK — see Traps
   commands/
@@ -134,10 +134,12 @@ outside its own markers. `install_uninstall_cycle_is_lossless` defends this.
 **Portable stack.** The default capture lives at `.synapse/stack` inside Skillshare's actual
 `git_root`; capture never commits or pushes. Registry plugins require an exact installed version.
 Declared Git plugins require a full SHA. Clean root Git checkouts are recorded only when `HEAD` is
-known on `origin`; everything else is snapshotted without caches. MCP headers and environment
-values become references, supported secret commands are preserved, and unsupported fields or
-inline credentials fail capture. Plugin settings are excluded and likely secret snapshot files are
-rejected. Local source snapshots still require human review before commit and explicit `--trust`.
+known on `origin`; everything else is snapshotted without caches. `stack.json` keeps MCP headers
+and environment values as references. `stack capture --with-secrets` writes their resolved values
+to sibling `secrets.age` with age/scrypt passphrase encryption; the passphrase and plaintext never
+enter Git. Restore writes a local mode-0600 `secrets.env` and configures supported shells to source
+it. Plugin settings are excluded and likely secret snapshot files are rejected. Local source
+snapshots still require human review before commit and explicit `--trust`.
 
 ## Traps
 
@@ -257,13 +259,10 @@ publish. `contents: write` is scoped to the release job only.
 
 ## Release status
 
-**v1.1.0 is released.** The public repository and assets were verified through
-anonymous bootstrap.
-
-**v1.2.0 is unreleased.** Merge, CI, a matching `v1.2.0` tag, release assets,
-and a second anonymous bootstrap still gate its release. The refreshed OMP lock
-raises `sharp` to 0.35.4 and `adm-zip` to 0.6.1, which are outside the reported
-vulnerable ranges.
+**v1.1.0 and v1.2.0 are released.** v1.2.0 was tagged on 2026-09-15 and its
+release workflow published all four target assets; an anonymous aarch64-darwin
+bootstrap succeeded. Any work after that tag, including encrypted portable-secret
+sync, remains unreleased until it has its own CI, tag, assets, and bootstrap proof.
 
 ---
 
@@ -273,9 +272,11 @@ The working tree implements the OMP-centered portable stack:
 
 - Skillshare remains authoritative for skills, agents, and extras in its existing Git repository.
 - `synapse stack capture` records all OMP profiles, pinned plugin origins or local snapshots,
-  enablement/features, and secret-free OMP MCP definitions. Plugin settings are excluded.
+  enablement/features, and secret-free OMP MCP definitions. `--with-secrets` additionally tracks
+  the referenced MCP values in encrypted `secrets.age`; plugin settings remain excluded.
 - First-time `synapse stack restore --remote …` clones only. After review, a second
-  `synapse stack restore --trust` restores OMP and runs `skillshare sync --all`.
+  `synapse stack restore --trust --with-secrets` restores OMP, local secret environment, and
+  `skillshare sync --all`.
 
 Still deferred:
 
@@ -305,7 +306,7 @@ install URL. Both are stale: the language is Rust, the host is
 - Fix causes, not symptoms. Grep every caller before changing a shared function;
   one guard in the shared path beats a guard in each caller, and patching only
   the reported path leaves sibling callers broken.
-- Reach for stdlib and prebuilt artifacts before new dependencies. The 8 current
-  crates are all load-bearing.
+- Reach for stdlib and prebuilt artifacts before new dependencies. Every direct crate must be
+  load-bearing.
 - Mark deliberate shortcuts `// ponytail:` naming the ceiling and the upgrade
   path, so a later reader can tell intent from ignorance.

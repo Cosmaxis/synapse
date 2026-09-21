@@ -1,6 +1,7 @@
 mod commands;
 mod nix;
 mod platform;
+mod secrets;
 mod shell;
 mod state;
 #[cfg(test)]
@@ -66,35 +67,6 @@ enum Commands {
     /// Manage the auto-update scheduler
     #[command(subcommand)]
     AutoUpdate(AutoUpdateCommands),
-
-    /// All-in-one bundle: export/import everything (encrypted, plug-and-play)
-    #[command(subcommand)]
-    Bundle(BundleCommands),
-}
-
-#[derive(Subcommand)]
-enum BundleCommands {
-    /// Export everything (stack + secrets + state) as a single bundle
-    Export {
-        /// Output file; defaults to synapse-bundle-<ts>.tar.zst[.age]
-        #[arg(long, value_name = "FILE")]
-        output: Option<PathBuf>,
-        /// Encrypt with a passphrase (plug-and-play, only password needed to restore)
-        #[arg(long)]
-        encrypt: bool,
-        /// Password for encryption (if not given, will prompt)
-        #[arg(long, value_name = "PASS")]
-        password: Option<String>,
-    },
-    /// Import a bundle (decrypts if encrypted)
-    Import {
-        /// Bundle file to import
-        #[arg(long, value_name = "FILE")]
-        input: PathBuf,
-        /// Password for encrypted bundle (if not given, will prompt if needed)
-        #[arg(long, value_name = "PASS")]
-        password: Option<String>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -104,6 +76,9 @@ enum StackCommands {
         /// Tracked output directory; defaults inside Skillshare's Git root
         #[arg(long, value_name = "DIR")]
         output: Option<PathBuf>,
+        /// Encrypt portable MCP environment values into tracked secrets.age
+        #[arg(long)]
+        with_secrets: bool,
     },
     /// Restore a captured stack
     Restore {
@@ -122,6 +97,9 @@ enum StackCommands {
         /// Replace conflicting MCP server definitions
         #[arg(long)]
         force: bool,
+        /// Decrypt tracked secrets.age into local shell environment
+        #[arg(long)]
+        with_secrets: bool,
     },
     /// Inspect a captured stack and missing environment variables
     Status {
@@ -166,20 +144,42 @@ fn main() {
             commands::uninstall::run(package.as_deref(), all)
         }
         Some(Commands::Stack(sub)) => match sub {
-            StackCommands::Capture { output } => commands::stack::capture(output.as_deref()),
+            StackCommands::Capture {
+                output,
+                with_secrets,
+            } => {
+                if with_secrets {
+                    commands::stack::capture_with_secrets(output.as_deref())
+                } else {
+                    commands::stack::capture(output.as_deref())
+                }
+            }
             StackCommands::Restore {
                 input,
                 remote,
                 git_root,
                 trust,
                 force,
-            } => commands::stack::restore(
-                input.as_deref(),
-                remote.as_deref(),
-                &git_root,
-                trust,
-                force,
-            ),
+                with_secrets,
+            } => {
+                if with_secrets {
+                    commands::stack::restore_with_secrets(
+                        input.as_deref(),
+                        remote.as_deref(),
+                        &git_root,
+                        trust,
+                        force,
+                    )
+                } else {
+                    commands::stack::restore(
+                        input.as_deref(),
+                        remote.as_deref(),
+                        &git_root,
+                        trust,
+                        force,
+                    )
+                }
+            }
             StackCommands::Status { input } => commands::stack::status(input.as_deref()),
         },
         Some(Commands::AutoUpdate(sub)) => match sub {
@@ -188,16 +188,6 @@ fn main() {
             AutoUpdateCommands::Config => commands::auto_update::open_config(),
             AutoUpdateCommands::Now => commands::auto_update::run_now(),
             AutoUpdateCommands::Status => commands::auto_update::show_status(),
-        },
-        Some(Commands::Bundle(sub)) => match sub {
-            BundleCommands::Export {
-                output,
-                encrypt,
-                password,
-            } => commands::bundle::export(output.as_deref(), encrypt, password.as_deref()),
-            BundleCommands::Import { input, password } => {
-                commands::bundle::import(&input, password.as_deref())
-            }
         },
     };
     if let Err(e) = result {
