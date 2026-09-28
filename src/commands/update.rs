@@ -118,7 +118,7 @@ pub fn flake_attr(flake_dir: &std::path::Path, attribute: &str) -> String {
     let reference = std::env::var("SYNAPSE_FLAKE_REF")
         .ok()
         .filter(|value| !value.is_empty() && !value.chars().any(char::is_whitespace))
-        .unwrap_or_else(|| "github:thinhngotony/synapse".to_string());
+        .unwrap_or_else(|| "github:Cosmaxis/synapse".to_string());
     format!("{}#{attribute}", reference.trim_end_matches('#'))
 }
 

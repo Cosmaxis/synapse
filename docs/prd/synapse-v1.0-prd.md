@@ -66,7 +66,7 @@ Today, setting up an AI coding environment requires:
 **As a developer**, I want to install the entire AI harness with one command, so I can start coding in minutes instead of hours.
 
 **Acceptance criteria**:
-- [ ] Run `curl -fsSL https://synapse.hyberorbit.com/install | sh` on fresh machine
+- [ ] Run `curl -fsSL https://synapse.cosmaxis.com/install | sh` on fresh machine
 - [ ] Installer detects OS and architecture
 - [ ] Installer prompts for package selection (herdr, omp, skillshare)
 - [ ] Installer shows progress with ETAs
@@ -120,7 +120,7 @@ Today, setting up an AI coding environment requires:
 
 #### 1. One-command Installation
 ```bash
-curl -fsSL https://synapse.hyberorbit.com/install | sh
+curl -fsSL https://synapse.cosmaxis.com/install | sh
 ```
 - Detects OS/arch automatically
 - Installs Nix if missing
@@ -438,7 +438,7 @@ matrix:
 
 ### Launch (Week 6):
 - [ ] v1.0 released
-- [ ] Install script live at https://synapse.hyberorbit.com/install (Cloudflare Worker: worker.js + wrangler.toml; deploy pending two Cloudflare secrets from user)
+- [ ] Install script live at https://synapse.cosmaxis.com/install (Cloudflare Worker: worker.js + wrangler.toml; deploy pending two Cloudflare secrets from user)
 - [ ] Documentation published
 - [ ] CI green on all platforms
 
@@ -467,7 +467,7 @@ Deferred to v1.1+:
 
 ```bash
 # Install
-curl -fsSL https://synapse.hyberorbit.com/install | sh
+curl -fsSL https://synapse.cosmaxis.com/install | sh
 
 # Package management
 synapse install <package>          # Install one package

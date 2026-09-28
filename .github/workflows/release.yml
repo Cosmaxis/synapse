@@ -166,7 +166,7 @@ jobs:
             echo "## Install"
             echo
             echo '```sh'
-            echo 'curl -sfS https://synapse.hyberorbit.com/install | sh'
+            echo 'curl -sfS https://synapse.cosmaxis.com/install | sh'
             echo '```'
             echo
             echo "## Managed packages"

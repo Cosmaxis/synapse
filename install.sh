@@ -2,7 +2,7 @@
 # Synapse installer — downloads a released binary, verifies it, installs it.
 #
 # Usage:
-#   curl -fsSL https://synapse.hyberorbit.com/install | sh
+#   curl -fsSL https://synapse.cosmaxis.com/install | sh
 #
 # Environment overrides (all optional):
 #   SYNAPSE_VERSION      release tag to install; unset means latest
@@ -13,7 +13,7 @@
 # shellcheck disable=SC2059  # color vars are deliberately part of the format
 set -eu
 
-REPO="thinhngotony/synapse"
+REPO="Cosmaxis/synapse"
 DEST_DIR="${SYNAPSE_INSTALL_DIR:-$HOME/.local/bin}"
 DEST="$DEST_DIR/synapse"
 

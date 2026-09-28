@@ -35,7 +35,7 @@ The repository and release assets are public. Anonymous bootstrap was verified
 end to end against the published v1.1.0 release:
 
 ```bash
-curl -fsSL https://synapse.hyberorbit.com/install | sh
+curl -fsSL https://synapse.cosmaxis.com/install | sh
 ```
 
 The main branch targets v1.2.0; it is not a release until its matching tag and
@@ -47,7 +47,7 @@ If you already have Nix 2.24+ and prefer to manage Synapse through your Nix
 profile:
 
 ```bash
-nix profile install github:thinhngotony/synapse
+nix profile install github:Cosmaxis/synapse
 synapse install   # open the TUI to install the harness packages
 ```
 
@@ -207,7 +207,7 @@ max_duration: 30m
 Scheduled runs take the same lock as interactive ones, so an update can never collide with an
 install you started yourself.
 
-Package operations use `github:thinhngotony/synapse` by default, independent of the current
+Package operations use `github:Cosmaxis/synapse` by default, independent of the current
 directory. Developers may opt into a reviewed local checkout with `SYNAPSE_FLAKE_DIR`.
 Packages are installed into the dedicated Nix profile rather than an unrooted `nix build` result.
 The public repository makes the default flake anonymously resolvable.

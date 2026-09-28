@@ -9,25 +9,25 @@ globalThis.fetch = async () => {
   throw new Error("bundled Worker routes must not fetch at request time");
 };
 
-let res = await worker.fetch(new Request("https://synapse.hyberorbit.com/install"));
+let res = await worker.fetch(new Request("https://synapse.cosmaxis.com/install"));
 assert.equal(res.status, 200);
 assert.equal(res.headers.get("Content-Type"), "text/x-shellscript");
 assert.equal(res.headers.get("Cache-Control"), "no-cache, no-store, must-revalidate");
 assert.equal(await res.text(), installer);
 
-res = await worker.fetch(new Request("https://synapse.hyberorbit.com/install.sh"));
+res = await worker.fetch(new Request("https://synapse.cosmaxis.com/install.sh"));
 assert.equal(res.status, 200);
 assert.equal(await res.text(), installer);
 
-res = await worker.fetch(new Request("https://synapse.hyberorbit.com/"));
+res = await worker.fetch(new Request("https://synapse.cosmaxis.com/"));
 assert.equal(res.status, 200);
 const help = await res.text();
-assert.match(help, /curl -sfS https:\/\/synapse\.hyberorbit\.com\/install \| sh/);
+assert.match(help, /curl -sfS https:\/\/synapse\.cosmaxis\.com\/install \| sh/);
 assert.match(help, /Synapse latest/);
 assert.match(help, /github\.com\/thinhngotony\/synapse/);
 assert.match(help, /\/install/);
 
-res = await worker.fetch(new Request("https://synapse.hyberorbit.com/nope"));
+res = await worker.fetch(new Request("https://synapse.cosmaxis.com/nope"));
 assert.equal(res.status, 404);
 assert.equal(await res.text(), "Not found");
 
