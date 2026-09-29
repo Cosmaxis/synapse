@@ -24,7 +24,7 @@ assert.equal(res.status, 200);
 const help = await res.text();
 assert.match(help, /curl -sfS https:\/\/synapse\.cosmaxis\.com\/install \| sh/);
 assert.match(help, /Synapse latest/);
-assert.match(help, /github\.com\/thinhngotony\/synapse/);
+assert.match(help, /github\.com\/Cosmaxis\/synapse/);
 assert.match(help, /\/install/);
 
 res = await worker.fetch(new Request("https://synapse.cosmaxis.com/nope"));

@@ -292,7 +292,7 @@ transport and conflict model.
 
 Ignore any earlier plan that assigns v1 a Go implementation or a `synapse.io`
 install URL. Both are stale: the language is Rust, the host is
-`synapse.hyberorbit.com`.
+`synapse.cosmaxis.com`.
 
 ---
 

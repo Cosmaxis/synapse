@@ -1013,7 +1013,7 @@ mod tests {
         let snippet = home.join("snippet.sh");
         fs::write(&snippet, Shell::Bash.secret_environment_snippet()).unwrap();
 
-        let output = std::process::Command::new("bash")
+        let output = match std::process::Command::new("bash")
             .args([
                 "--noprofile",
                 "--norc",
@@ -1025,7 +1025,15 @@ mod tests {
             .env("HOME", &home)
             .env("XDG_CONFIG_HOME", &config)
             .output()
-            .unwrap();
+        {
+            Ok(output) => output,
+            // ponytail: cross-target runners may not include a target-architecture Bash.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::remove_dir_all(home).ok();
+                return;
+            }
+            Err(error) => panic!("failed to run Bash snippet: {error}"),
+        };
 
         assert!(output.status.success());
         assert_eq!(output.stdout, b"quoted value");
